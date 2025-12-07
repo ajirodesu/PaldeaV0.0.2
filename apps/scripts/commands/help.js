@@ -164,7 +164,7 @@ function generatePaginatedList(commands, page, prefix) {
       `${listItems}\n\n` +
       `▫️ Page ${current} of ${totalPages}\n` +
       `▫️ Total Commands: ${total}\n` +
-      `▫️ Type \`${prefix}help <cmd>\` for details.`
+      `▫️ Type \`${prefix}help <command>\` for details.`
     ), 
     current, 
     totalPages 

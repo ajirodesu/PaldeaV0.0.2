@@ -9,7 +9,8 @@ const SYMBOLS = {
   warning: "⚠️", 
   cooldown: "⏳", 
   guide: "📄", 
-  unknown: "❓"
+  unknown: "❓",
+  maintenance: "🚧"
 };
 
 /**
@@ -80,6 +81,9 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
   const { prefix, subprefix } = settings;
   const body = msg.text.trim();
 
+  // [NEW] Define isDev early for reuse in Maintenance and Cooldown logic
+  const isDev = settings.developers.includes(String(msg.from.id));
+
   // 1. Prefix Detection
   const allPrefixes = [prefix, ...(subprefix || [])];
   const matchedPrefix = allPrefixes.find(p => body.startsWith(p));
@@ -110,14 +114,29 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
   // 5. Unknown Command Handling
   if (!command) {
     if (isPrefixed) {
-      // Don't error on /start as it's often handled by an event or specific logic
       if (commandName === "start") return; 
-
-      // Optional: Add Levenshtein distance here for "Did you mean...?"
       return response.reply(`${SYMBOLS.unknown} **Unknown Command**\n\`${commandName}\` not found.`);
     }
     return; // Ignore non-command text messages
   }
+
+  // --- [NEW] MAINTENANCE MODE LOGIC ---
+  // If maintenance is ON, only Developers OR whitelisted commands can pass.
+  if (settings.maintenance) {
+    const ignoredCommands = settings.maintenanceIgnore || [];
+
+    // Check if command is whitelisted (checks name or aliases)
+    const isWhitelisted = ignoredCommands.includes(command.name) || 
+                          (command.aliases && command.aliases.some(a => ignoredCommands.includes(a)));
+
+    if (!isDev && !isWhitelisted) {
+      return response.reply(
+        `${SYMBOLS.maintenance} **System Under Maintenance**\n` +
+        `The bot is currently being updated. Please try again later.`
+      );
+    }
+  }
+  // ------------------------------------
 
   // 6. Usage Guide Helper
   const usage = async () => {
@@ -134,23 +153,27 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
 
   try {
     // 7. Prefix Enforcement
-    const requiresPrefix = command.prefix ?? true; // Default to true
-    if (requiresPrefix === true && !isPrefixed) return; // Command needs prefix but none used
-    if (requiresPrefix === false && isPrefixed) return; // Command prohibits prefix
+    const requiresPrefix = command.prefix ?? true; 
+    if (requiresPrefix === true && !isPrefixed) return; 
+    if (requiresPrefix === false && isPrefixed) return; 
 
     // 8. Permission Check
     const level = command.type || command.access || 'anyone';
     if (!(await checkPermission(bot, msg, level))) {
-      // Fail silently for dev commands to hide them from normal users
       if (level === 'developer') return; 
       return response.reply(`${SYMBOLS.warning} Access Restricted: **${level.toUpperCase()}**`);
     }
 
-    // 9. Cooldown Check
-    if (handleCooldown({ msg, response, cooldowns }, command)) return;
+    // 9. Cooldown Check [MODIFIED]
+    // Only check cooldown if the user is NOT a developer
+    if (!isDev) {
+      if (handleCooldown({ msg, response, cooldowns }, command)) return;
+    }
+
+    const fullName = msg.from.first_name + (msg.from.last_name ? ` ${msg.from.last_name}` : "");
 
     // 10. Execute
-    log.commands(`${command.name} called by ${userId}`);
+    log.commands(`${command.name} called by ${fullName}`);
 
     await command.onStart({ 
       bot, 
