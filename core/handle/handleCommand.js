@@ -34,7 +34,14 @@ const checkPermission = async (bot, msg, level) => {
     case 'group':     return ['group', 'supergroup'].includes(chatType);
     case 'private':   return chatType === 'private';
     case 'administrator':
-      if (chatType === 'private' || isDev) return true;
+      // [MODIFIED] Strict Check: Administrator commands are forbidden in private chats.
+      // This returns false immediately if the chat is private, even for developers.
+      if (chatType === 'private') return false;
+
+      // Developer Bypass: If we are in a group/channel, developers get instant access.
+      if (isDev) return true;
+
+      // Standard Admin Check: Verify status via Telegram API
       try {
         const member = await bot.getChatMember(msg.chat.id, senderId);
         return ['creator', 'administrator'].includes(member.status);
@@ -161,6 +168,10 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
     const level = command.type || command.access || 'anyone';
     if (!(await checkPermission(bot, msg, level))) {
       if (level === 'developer') return; 
+      // If it failed because it was an administrator command in private
+      if (level === 'administrator' && msg.chat.type === 'private') {
+        return response.reply(`${SYMBOLS.warning} This command cannot be used in private chats.`);
+      }
       return response.reply(`${SYMBOLS.warning} Access Restricted: **${level.toUpperCase()}**`);
     }
 
