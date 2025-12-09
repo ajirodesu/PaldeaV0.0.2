@@ -2,6 +2,7 @@ import { starter } from './system/starter.js';
 import { install } from './utility/install.js';
 import log from './utility/log.js';
 import { getSettings, setSettings } from './utility/genset.js';
+import { db, usersData, groupsData } from './system/database.js'; // [NEW] Import Database
 import fs from 'fs';
 
 // --- 1. Global Error Handling ---
@@ -26,6 +27,19 @@ try {
   log.error('Error parsing API file:', e.message);
 }
 
+// Load Command Settings
+let cmdset = {};
+try {
+  if (fs.existsSync('./json/cmdset.json')) {
+    // [FIX] Changed 'api =' to 'cmdset =' to prevent overwriting
+    cmdset = JSON.parse(fs.readFileSync('./json/cmdset.json', 'utf8'));
+  } else {
+    log.error('Commands Settings file (./json/cmdset.json) is missing.');
+  }
+} catch (e) {
+  log.error('Error parsing Commands Settings file:', e.message);
+}
+
 // PERFORMANCE FIX: Load settings into memory ONCE
 let runtimeSettings = getSettings();
 
@@ -48,7 +62,14 @@ global.paldea = {
   replies:   new Map(),
   instances: new Map(),
   tokens:    [],
-  api:       api
+  cmdset:    cmdset,
+  api:       api,
+};
+  // [NEW] Database Access Layer
+  // Attaching here allows access throughout the bot without extra imports
+ global.db = {
+    users: usersData,
+    groups: groupsData
 };
 
 // Extend Paldea with Dynamic Getters
@@ -62,8 +83,21 @@ Object.assign(global.paldea, {
 // --- 3. System Boot ---
 
 async function main() {
-  await starter();
-  await install(global.log);
+  try {
+    // [NEW] 1. Connect to NeonDB before starting the bot
+    // This ensures schema is synced and DB is ready for commands
+    await db.connect();
+
+    // 2. Start the Bot Logic
+    await starter();
+
+    // 3. Install Utilities
+    await install(global.log);
+
+  } catch (err) {
+    log.error('CRITICAL SYSTEM FAILURE:', err);
+    process.exit(1);
+  }
 }
 
 main();

@@ -10,15 +10,12 @@ const SYMBOLS = {
   cooldown: "⏳", 
   guide: "📄", 
   unknown: "❓",
-  maintenance: "🚧"
+  maintenance: "🚧",
+  lock: "🔒"
 };
 
 /**
  * Checks if a user has the required permission level.
- * @param {Object} bot - Telegram Bot instance
- * @param {Object} msg - Message object
- * @param {string} level - Required level (developer, vip, etc)
- * @returns {Promise<boolean>}
  */
 const checkPermission = async (bot, msg, level) => {
   const { settings } = global.paldea;
@@ -34,14 +31,8 @@ const checkPermission = async (bot, msg, level) => {
     case 'group':     return ['group', 'supergroup'].includes(chatType);
     case 'private':   return chatType === 'private';
     case 'administrator':
-      // [MODIFIED] Strict Check: Administrator commands are forbidden in private chats.
-      // This returns false immediately if the chat is private, even for developers.
       if (chatType === 'private') return false;
-
-      // Developer Bypass: If we are in a group/channel, developers get instant access.
       if (isDev) return true;
-
-      // Standard Admin Check: Verify status via Telegram API
       try {
         const member = await bot.getChatMember(msg.chat.id, senderId);
         return ['creator', 'administrator'].includes(member.status);
@@ -53,7 +44,6 @@ const checkPermission = async (bot, msg, level) => {
 
 /**
  * Manages command cooldowns.
- * @returns {boolean} True if the user is on cooldown.
  */
 const handleCooldown = (context, command) => {
   const { msg, response, cooldowns } = context;
@@ -81,21 +71,18 @@ const handleCooldown = (context, command) => {
  * Main Command Execution Logic
  */
 export async function handleCommand({ bot, msg, response, log, userId }) {
-  // Ignore empty messages or bots
   if (!msg.text || msg.from.is_bot) return;
 
   const { settings, commands, cooldowns } = global.paldea;
   const { prefix, subprefix } = settings;
   const body = msg.text.trim();
-
-  // [NEW] Define isDev early for reuse in Maintenance and Cooldown logic
   const isDev = settings.developers.includes(String(msg.from.id));
 
   // 1. Prefix Detection
   const allPrefixes = [prefix, ...(subprefix || [])];
   const matchedPrefix = allPrefixes.find(p => body.startsWith(p));
 
-  // 2. "System Online" Check (User typed ONLY prefix)
+  // 2. System Online Check
   if (matchedPrefix && body === matchedPrefix) {
     return response.reply(`🟢 **System Online.**\nType \`${matchedPrefix}help\` to see commands.`);
   }
@@ -118,34 +105,27 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
   const command = commands.get(commandName) || 
                   [...commands.values()].find(cmd => cmd.aliases?.includes(commandName));
 
-  // 5. Unknown Command Handling
+  // 5. Unknown Command
   if (!command) {
     if (isPrefixed) {
       if (commandName === "start") return; 
       return response.reply(`${SYMBOLS.unknown} **Unknown Command**\n\`${commandName}\` not found.`);
     }
-    return; // Ignore non-command text messages
+    return;
   }
 
-  // --- [NEW] MAINTENANCE MODE LOGIC ---
-  // If maintenance is ON, only Developers OR whitelisted commands can pass.
+  // 6. Maintenance Mode
   if (settings.maintenance) {
     const ignoredCommands = settings.maintenanceIgnore || [];
-
-    // Check if command is whitelisted (checks name or aliases)
     const isWhitelisted = ignoredCommands.includes(command.name) || 
                           (command.aliases && command.aliases.some(a => ignoredCommands.includes(a)));
 
     if (!isDev && !isWhitelisted) {
-      return response.reply(
-        `${SYMBOLS.maintenance} **System Under Maintenance**\n` +
-        `The bot is currently being updated. Please try again later.`
-      );
+      return response.reply(`${SYMBOLS.maintenance} **System Under Maintenance**\nPlease try again later.`);
     }
   }
-  // ------------------------------------
 
-  // 6. Usage Guide Helper
+  // 7. Helpers: Usage & isRegistered
   const usage = async () => {
     if (!command.guide) return;
     const p = command.prefix === false ? "" : (matchedPrefix || prefix);
@@ -158,40 +138,56 @@ export async function handleCommand({ bot, msg, response, log, userId }) {
     );
   };
 
+  /**
+   * [NEW] Checks if the user is registered in the database.
+   * If NOT registered, it automatically replies with a warning.
+   * Usage inside command: if (!(await isRegistered())) return;
+   */
+  const isRegistered = async () => {
+    const user = await global.db.users.get(msg.from.id);
+    if (!user.registered) {
+      await response.reply(
+        `${SYMBOLS.lock} **Access Denied**\n\n` +
+        `You are not registered in the system.\n` +
+        `Please use \`${matchedPrefix}register\` to sign up and access this feature.`
+      );
+      return false; // User is NOT registered
+    }
+    return true; // User IS registered
+  };
+
   try {
-    // 7. Prefix Enforcement
+    // 8. Prefix Enforcement
     const requiresPrefix = command.prefix ?? true; 
     if (requiresPrefix === true && !isPrefixed) return; 
     if (requiresPrefix === false && isPrefixed) return; 
 
-    // 8. Permission Check
+    // 9. Permission Check
     const level = command.type || command.access || 'anyone';
     if (!(await checkPermission(bot, msg, level))) {
       if (level === 'developer') return; 
-      // If it failed because it was an administrator command in private
       if (level === 'administrator' && msg.chat.type === 'private') {
         return response.reply(`${SYMBOLS.warning} This command cannot be used in private chats.`);
       }
       return response.reply(`${SYMBOLS.warning} Access Restricted: **${level.toUpperCase()}**`);
     }
 
-    // 9. Cooldown Check [MODIFIED]
-    // Only check cooldown if the user is NOT a developer
-    if (!isDev) {
-      if (handleCooldown({ msg, response, cooldowns }, command)) return;
-    }
+    // 10. Cooldown Check
+    if (!isDev && handleCooldown({ msg, response, cooldowns }, command)) return;
 
     const fullName = msg.from.first_name + (msg.from.last_name ? ` ${msg.from.last_name}` : "");
-
-    // 10. Execute
     log.commands(`${command.name} called by ${fullName}`);
 
+    // 11. Execution
     await command.onStart({ 
       bot, 
       msg, 
       args, 
       response, 
-      usage, 
+      usage,
+      isRegistered, // [NEW] Passed to command
+      usersData: global.db.users,   // Convenience
+      groupsData: global.db.groups, // Convenience
       commandName, 
       matches: matchedPrefix 
     });
